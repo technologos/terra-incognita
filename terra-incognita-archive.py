@@ -3,7 +3,7 @@
 """
 Created on Mon Dec 26 18:44:27 2016
 
-@author: CMilroy
+@author: technologos
 """
 
     '''

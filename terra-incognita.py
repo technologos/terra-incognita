@@ -3,7 +3,9 @@
 """
 Created on Sun Dec 25 20:02:19 2016
 
-@author: CMilroy
+@author: technologos
+
+Thanks to mewo2 and amitp for inspiration and tutorials
 """
 
 import numpy
