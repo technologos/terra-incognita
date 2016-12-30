@@ -10,9 +10,9 @@ Thanks particularly to mewo2 for the framework for the regularization.
 """
 
 import numpy
-from numpy.random import random
+from numpy.random import random, randint
 from matplotlib import pyplot
-from scipy.spatial import Voronoi, voronoi_plot_2d, Delaunay
+from scipy.spatial import Voronoi, voronoi_plot_2d
 
 '''
 helper functions
@@ -40,7 +40,7 @@ class MapTile():
         self.neighbors = [] # indices of MapTiles bordering this MapTile
         self.edges = [] #indices of MapEdges bordering this MapTile
         self.biome = []
-        self.plate = []
+        self.plate = -1 # index of plate on which this tile sits
         self.properties = []
 
 class MapEdge():
@@ -55,6 +55,14 @@ class MapVertex():
         self.coords = coords
         self.edges = [] # indices of connected MapEdges
         
+class TectonicPlate():
+    def __init__(self, initial_tile):
+        self.plate_type = []
+        self.tiles = [initial_tile]
+        self.center = initial_tile.center
+        self.rotation = 0
+        self.color = tuple(random(3))
+        
 
 class Map():    
     def __init__(self, 
@@ -64,17 +72,17 @@ class Map():
         # define the fundamental topology
         self.points = random((number_of_tiles, 2))
         
-        self.tiles = []
+        self.tiles = [] # MapTiles
         self.generate_tiles(smoothing_strength) # center, vertices, vertex_coords
         
-        self.edges = []
+        self.edges = [] # MapEdges
         self.generate_adjacencies() # neighbors
         
-        self.vertices = []
+        self.vertices = [] # MapVertexes
         self.generate_vertices()
         
         # create tectonic plates
-        self.plates = []
+        self.plates = [] # TectonicPlates
         self.generate_plates()
         
         
@@ -119,35 +127,70 @@ class Map():
             
     def generate_adjacencies(self):
         for index, ridge in enumerate(self.voronoi.ridge_points):
-            self.edges.append(MapEdge(ridge))
+            new_edge = MapEdge(ridge)
+            self.edges.append(new_edge)
             for point in ridge:
                 neighbor_point = [x for x in ridge if x != point][0]
-                self.tiles[point].neighbors.append(neighbor_point)
-                self.tiles[point].edges.append(index)
+                self.tiles[point].neighbors.append(self.tiles[neighbor_point])
+                self.tiles[point].edges.append(new_edge)
     
     def generate_vertices(self):
         for vertex in self.voronoi.vertices:
-            self.vertices.append(MapVertex(vertex))
+            new_vertex = MapVertex(vertex)
+            self.vertices.append(new_vertex)
         for index, ridge in enumerate(self.voronoi.ridge_vertices):
-            for vertex in ridge:
-                if vertex != -1:
-                    self.edges[index].vertices.append(vertex)
-                    self.vertices[vertex].edges.append(index)
+            for vertex_index in ridge:
+                if vertex_index != -1:
+                    self.edges[index].vertices.append(self.vertices[vertex_index])
+                    self.vertices[vertex_index].edges.append(self.edges[index])
     
     def generate_plates(self):
-        pass
+        tiles_assigned = 0
+        while tiles_assigned < len(self.tiles):
+            focus_index = randint(len(self.tiles))
+            focus_tile = self.tiles[focus_index]
+            if focus_tile.plate == -1:
+                new_plate = TectonicPlate(focus_tile)
+                focus_tile.plate = new_plate
+                tiles_assigned += 1
+                self.plates.append(new_plate)
+            for focus_plate in self.plates:
+                tiles_to_add = []
+                for tile in focus_plate.tiles:
+                    for neighbor in tile.neighbors:
+                        if neighbor.plate == -1:
+                            neighbor.plate = tile.plate
+                            tiles_assigned += 1
+                            tiles_to_add.append(neighbor)
+                for tile in tiles_to_add:
+                    focus_plate.tiles.append(tile)
+                
     
-    def display(self, highlight_tile = -1, show_plates = False,
+    def display(self, highlight_tile = [-1], show_plates = False,
+                show_centers = True, show_intersections = True,
+                clean = False,
                 xlim = [0,1], ylim = [0,1]):
         
-        voronoi_plot_2d(self.voronoi)
+        if clean:
+            show_centers = False
+            show_intersections = False
+            xlim = [.05, .95]
+            ylim = [.05, .95]
+        
+        voronoi_plot_2d(self.voronoi, 
+                        show_points = show_centers, 
+                        show_vertices = show_intersections)
+        
+        highlight_tile = numpy.asarray(highlight_tile)
             
         if numpy.all(highlight_tile >= 0) and numpy.all(highlight_tile < len(self.tiles)):
             for tile in highlight_tile:
                 pyplot.fill(*zip(*self.tiles[tile].vertex_coords), 'y')
         
-#        if show_plates:
-#            highlight_tile = self.plates[plate]
+        if show_plates:
+            for plate in self.plates:
+                for tile in plate.tiles:
+                    pyplot.fill(*zip(*tile.vertex_coords), color = plate.color)
                 
         #pyplot.triplot(self.points[:,0], self.points[:,1], self.delaunay.simplices.copy(), 'r-')
         
