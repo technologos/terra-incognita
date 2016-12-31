@@ -10,9 +10,15 @@ Thanks particularly to mewo2 for the framework for the regularization.
 """
 
 import numpy
+from numpy import sqrt, square, dot
 from numpy.random import random, randint
+from numpy.linalg import norm as magnitude
 from matplotlib import pyplot
-from scipy.spatial import Voronoi, voronoi_plot_2d
+from matplotlib.collections import LineCollection
+from scipy.spatial import Voronoi
+from random import uniform
+from math import degrees, acos
+
 
 '''
 helper functions
@@ -27,6 +33,10 @@ def centroid(vertices):
     C_x = ((x + x1) * C) / (6 * A)
     C_y = ((y + y1) * C) / (6 * A)
     return (sum(C_x), sum(C_y))
+
+def angle(vector1, vector2):
+    return degrees(acos(dot(vector1, vector2) / 
+                                  (magnitude(vector1) * magnitude(vector2))))
   
 '''
 map classes
@@ -42,6 +52,8 @@ class MapTile():
         self.biome = []
         self.plate = -1 # index of plate on which this tile sits
         self.properties = []
+        self.height = 0 # calculated from edges
+        self.boundary = False # is this tile on the outisde of a plate?
 
 class MapEdge():
     def __init__(self, tiles):
@@ -49,6 +61,9 @@ class MapEdge():
         self.vertices = [] # indices of two endpoints
         self.type = []
         self.properties = []
+        self.height = 0 # derived from adjacent MapTiles' velocity vectors
+        self.length = 0
+        self.boundary = False
 
 class MapVertex():
     def __init__(self, coords):
@@ -60,8 +75,10 @@ class TectonicPlate():
         self.plate_type = []
         self.tiles = [initial_tile]
         self.center = initial_tile.center
-        self.rotation = 0
+        self.velocity = numpy.array([0, 0]) # do plates also rotate?
         self.color = tuple(random(3))
+        self.boundaries = [] # MapTiles 
+        # do plates also need heights?
         
 
 class Map():    
@@ -83,10 +100,12 @@ class Map():
         
         # create tectonic plates
         self.plates = [] # TectonicPlates
+        self.boundaries = [] # MapEdges
         self.generate_plates()
         
-        
         # move plates
+        self.move_plates()
+        
         # generate tradewinds
         # generate base heat
         # run simple dynamic weather
@@ -100,12 +119,11 @@ class Map():
         self.voronoi = Voronoi(self.points)
         for index, point in enumerate(self.voronoi.points):
             new_tile = MapTile(point)
-            new_tile.vertices = self.voronoi.regions[self.voronoi.point_region[index]]
-#            if -1 in new_tile.vertices:
-#                continue
-#            else:
+            new_tile.vertices = [i 
+                                 for i in self.voronoi.regions[self.voronoi.point_region[index]] 
+                                 if i != -1]
             new_tile.vertex_coords = numpy.asarray([self.voronoi.vertices[i] 
-                                                    for i in new_tile.vertices if i != -1])
+                                                    for i in new_tile.vertices])
             self.tiles.append(new_tile)
         
     def regularize_tiles(self, number_of_iterations):
@@ -126,13 +144,18 @@ class Map():
             self.points = numpy.asarray(new_points)
             
     def generate_adjacencies(self):
-        for index, ridge in enumerate(self.voronoi.ridge_points):
-            new_edge = MapEdge(ridge)
+        for ridge in self.voronoi.ridge_points:
+            tiles = [self.tiles[i] for i in ridge]
+            new_edge = MapEdge(tiles)
             self.edges.append(new_edge)
-            for point in ridge:
-                neighbor_point = [x for x in ridge if x != point][0]
-                self.tiles[point].neighbors.append(self.tiles[neighbor_point])
-                self.tiles[point].edges.append(new_edge)
+            
+            for index, tile in enumerate(tiles):
+                tiles[index].neighbors.append(tiles[1 - index])
+                tiles[index].edges.append(new_edge)
+#            for point in ridge:
+#                neighbor_point = [x for x in ridge if x != point][0]
+#                self.tiles[point].neighbors.append(self.tiles[neighbor_point])
+#                self.tiles[point].edges.append(new_edge)
     
     def generate_vertices(self):
         for vertex in self.voronoi.vertices:
@@ -151,25 +174,75 @@ class Map():
             focus_tile = self.tiles[focus_index]
             if focus_tile.plate == -1:
                 new_plate = TectonicPlate(focus_tile)
+                
+                velocity_vector = numpy.array([uniform(-1, 1), uniform(-1, 1)])
+                norm_factor = sqrt(numpy.sum(square(velocity_vector))) # makes magnitude 1
+                magnitude = random()
+                new_plate.velocity = magnitude * velocity_vector / norm_factor 
+                
                 focus_tile.plate = new_plate
                 tiles_assigned += 1
                 self.plates.append(new_plate)
+                
             for focus_plate in self.plates:
                 tiles_to_add = []
                 for tile in focus_plate.tiles:
-                    for neighbor in tile.neighbors:
+                    for index, neighbor in enumerate(tile.neighbors):
                         if neighbor.plate == -1:
                             neighbor.plate = tile.plate
                             tiles_assigned += 1
                             tiles_to_add.append(neighbor)
-                for tile in tiles_to_add:
-                    focus_plate.tiles.append(tile)
+                        elif neighbor.plate is not tile.plate:
+                            tile.boundary = True
+                            focus_plate.boundaries.append(tile)
+                focus_plate.tiles.extend(tiles_to_add)
+            
+        for edge in self.edges:
+            if not edge.boundary:
+                edge_plates = [tile.plate for tile in edge.tiles]
+                if edge_plates[0] is not edge_plates[1]:
+                    edge.boundary = True
+                    self.boundaries.append(edge)
+                    for tile in edge.tiles:
+                        tile.boundary = True
+        
+    def move_plates(self):
+        for edge in self.boundaries:
+            fault_vector = edge.vertices[0] - edge.vertices[1]
+            plate_vectors = [tile.plate.velocity for tile in edge.tiles]
+            fault_angles = [angle(fault_vector, plate_vector) for plate_vector in plate_vectors]
+            
+            if condition:
+                edge.type = 'transform'
+            elif condition2:
+                edge.type = 'convergent'
+            else:
+                edge.type = 'divergent'
+            
+            boundary_directions = []
+            velocities = []
+            for i in range(2):
+                boundary_directions.append(edge.tiles[i].center - edge.tiles[1-i].center)
+                velocities.append(edge.tiles[i].plate.velocity - edge.tiles[1-i].plate.velocity)
+#                similarities.append(cosine_similarity(edge.tiles[i].plate.velocity,
+#                                                      edge.tiles[1-i].plate.velocity))
+                # if angle between vectors is <20 of parallel, strike-slip
+                # if either is converging, -cosine similarity * sum(magnitudes)
+                # if either is diverging, cosine similarity * sum(magnitudes)
+                # if one is converging and the other is diverging, 
+                #     (back vector - fore vector) * CS
                 
     
-    def display(self, highlight_tile = [-1], show_plates = False,
-                show_centers = True, show_intersections = True,
+    def display(self, 
+                show_grid = True,
+                highlight_tile = [-1], 
+                show_centers = False, 
+                show_intersections = False,
+                show_plates = False,
+                show_plate_boundaries = False,
                 clean = False,
-                xlim = [0,1], ylim = [0,1]):
+                xlim = [0.05, .95], 
+                ylim = [0.05, .95]):
         
         if clean:
             show_centers = False
@@ -177,9 +250,43 @@ class Map():
             xlim = [.05, .95]
             ylim = [.05, .95]
         
-        voronoi_plot_2d(self.voronoi, 
-                        show_points = show_centers, 
-                        show_vertices = show_intersections)
+
+        figure = pyplot.figure()
+        axes = figure.gca()
+        
+        if show_grid:
+            line_segments = []
+            for edge in self.edges:
+                if len(edge.vertices) == 2:
+                    line_segments.append([(x, y) for x, y in [vertex.coords 
+                                          for vertex in edge.vertices]])
+            grid = LineCollection(line_segments,
+                                     colors='k',
+                                     lw=1.0,
+                                     linestyle='solid')
+            grid.set_alpha(1.0)
+            axes.add_collection(grid)
+
+        
+        if show_plate_boundaries:
+            line_segments = []
+            for edge in self.boundaries:
+                if len(edge.vertices) == 2:
+                    line_segments.append([(x, y) for x, y in [vertex.coords 
+                                          for vertex in edge.vertices]])
+            borders = LineCollection(line_segments,
+                                     colors='k',
+                                     lw=3.0,
+                                     linestyle='solid')
+            borders.set_alpha(1.0)
+            axes.add_collection(borders)
+            
+        
+        if show_plates:
+            for plate in self.plates:
+                for tile in plate.tiles:
+                    pyplot.fill(*zip(*tile.vertex_coords), color = plate.color)
+                    
         
         highlight_tile = numpy.asarray(highlight_tile)
             
@@ -187,19 +294,10 @@ class Map():
             for tile in highlight_tile:
                 pyplot.fill(*zip(*self.tiles[tile].vertex_coords), 'y')
         
-        if show_plates:
-            for plate in self.plates:
-                for tile in plate.tiles:
-                    pyplot.fill(*zip(*tile.vertex_coords), color = plate.color)
-                
-        #pyplot.triplot(self.points[:,0], self.points[:,1], self.delaunay.simplices.copy(), 'r-')
-        
         pyplot.xlim(xlim[0], xlim[1])
         pyplot.ylim(ylim[0], ylim[1])
         pyplot.show()
-
-
-
+        
 
 if __name__ == '__main__':
     pass
