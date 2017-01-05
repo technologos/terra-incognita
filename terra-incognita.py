@@ -13,7 +13,7 @@ import numpy
 from numpy import sqrt, dot, sign, mean, pi, cos, sin
 from numpy.random import random, randint, normal
 from numpy.linalg import norm as magnitude
-from matplotlib import pyplot
+from matplotlib import pyplot, is_interactive
 from matplotlib.collections import LineCollection
 from matplotlib import colors as mpl_colors
 from matplotlib import cm as colormap
@@ -22,7 +22,10 @@ from math import degrees, acos
 from functools import wraps
 from time import time
 from random import choice
+from os import listdir, chdir, mkdir
 
+if is_interactive():
+    pyplot.ioff()
 
 '''
 helper functions
@@ -49,9 +52,28 @@ def timed(function):
         start_time = time()
         function(*args, **kwargs)
         end_time = time()
-        print(round(end_time - start_time, 2), ' seconds')
+        print(round(end_time - start_time, 2), 'seconds')
     
     return timed_function
+    
+def bulk_generate(number, folder = '/Users/CMilroy/Pictures/Maps/', size = 4096):
+    
+    chdir(folder)
+    max_existing_index = max([int(name) for name in listdir() if name[0] != '.'])
+    new_folder = str(max_existing_index + 1)
+    mkdir(new_folder)
+    chdir(new_folder)
+    
+    for _ in range(number):
+        try:
+            testmap = Map(size)
+            print('Building image...')
+            testmap.display(show_tile_elevation = True, show_grid = False, 
+                            show_water = True, window = False)
+            timestamp = int(time())
+            pyplot.savefig(str(timestamp) + '.png')
+        except:
+            continue
   
 '''
 map classes
@@ -72,6 +94,7 @@ class MapTile():
         self.slope = 0
         self.roughness = 0
         self.water_depth = 0
+        self.ocean = False
 
 class MapEdge():
     def __init__(self, tiles):
@@ -82,6 +105,7 @@ class MapEdge():
         self.elevation = 0 # derived from adjacent MapTiles' velocity vectors
         self.length = 0
         self.boundary = False
+        self.river = False
 
 class MapVertex():
     def __init__(self, coords):
@@ -114,7 +138,7 @@ class Map():
         self.generate_tiles(smoothing_strength) # center, vertices, vertex_coords
         
         self.edges = [] # MapEdges
-        print('Generating adjacencies...')
+        print('Generating edges...')
         self.generate_adjacencies() # neighbors
         
         self.vertices = [] # MapVertexes
@@ -250,8 +274,8 @@ class Map():
                 normal_vector = edge.tiles[1-index].center - tile.center
                 normal_vector /= magnitude(normal_vector) # sets magnitude to 1
                 normal_force = dot(tile.plate.velocity, normal_vector)
-                edge.elevation +=  (sign(normal_force) * sqrt(abs(normal_force)) + # TODO: sqrt?
-                                    tile.plate.elevation) # TODO: adding plate elevation here?
+                edge.elevation +=  (sign(normal_force) * sqrt(abs(normal_force))) # TODO: sqrt?
+            edge.elevation += max([tile.plate.elevation for tile in edge.tiles]) # TODO: max?
     
     @timed
     def calculate_elevation(self):
@@ -320,7 +344,7 @@ class Map():
     
     @timed        
     def display(self, 
-                show_grid = True,
+                show_grid = False,
                 highlight_tile = [-1], 
                 show_centers = False, 
                 show_intersections = False,
@@ -329,15 +353,16 @@ class Map():
                 show_plate_velocities = False,
                 show_plate_boundaries = False,
                 show_boundary_elevation = False,
-                show_tile_elevation = False,
+                show_tile_elevation = True,
                 show_vertex_elevation = False,
                 show_tile_elevation_labels = False,
-                show_water = False,
+                show_water = True,
                 clean = False,
                 plate_test = False,
                 elevation_test = False,
                 xlim = [0.05, .95], 
-                ylim = [0.05, .95]):
+                ylim = [0.05, .95],
+                window = True):
         
         if clean:
 #            show_centers = False
@@ -436,7 +461,10 @@ class Map():
         
         pyplot.xlim(xlim[0], xlim[1])
         pyplot.ylim(ylim[0], ylim[1])
-        pyplot.show()
+        if window:
+            pyplot.show()
+        else:
+            return
         
 
 if __name__ == '__main__':
