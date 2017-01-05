@@ -10,8 +10,8 @@ Thanks particularly to mewo2 for the framework for the regularization.
 """
 
 import numpy
-from numpy import sqrt, dot, sign, mean, log2, pi, cos, sin
-from numpy.random import random, randint
+from numpy import sqrt, dot, sign, mean, pi, cos, sin
+from numpy.random import random, randint, normal
 from numpy.linalg import norm as magnitude
 from matplotlib import pyplot
 from matplotlib.collections import LineCollection
@@ -21,6 +21,7 @@ from scipy.spatial import Voronoi
 from math import degrees, acos
 from functools import wraps
 from time import time
+from random import choice
 
 
 '''
@@ -86,7 +87,7 @@ class MapVertex():
     def __init__(self, coords):
         self.coords = coords
         self.edges = [] # indices of connected MapEdges
-        self.elevation = 0
+        self.elevation = -100
         
 class TectonicPlate():
     def __init__(self, initial_tile):
@@ -96,16 +97,17 @@ class TectonicPlate():
         self.velocity = numpy.array([0, 0]) # do plates also rotate?
         self.color = tuple(random(3))
         self.boundaries = [] # MapTiles 
-        self.elevation = random() - .5 # TODO: refine
+        self.elevation = normal(scale = .25) # TODO: refine
         
 
 class Map():    
     def __init__(self, 
-                 number_of_tiles = 2**8,
+                 number_of_tiles = 4096,
                  smoothing_strength = 2):
         
         # define the fundamental topology
         self.points = random((number_of_tiles, 2))
+        self.ocean_elevation = random() - .5 # TODO: refine
         
         self.tiles = [] # MapTiles
         print('Generating tiles...')
@@ -128,24 +130,25 @@ class Map():
         # move plates
         print('Moving plates...')
         self.move_plates()
-        #     note: island-forming volcanoes?
+        #     TODO: island-forming volcanoes?
         
         # update elevations
         print('Calculating elevation...')
         self.calculate_elevation()
-        self.ocean_elevation = random() - .5 # TODO: refine
         self.fill_oceans()
         
         # generate tradewinds
-        self.latitude = randint(-60, 61) # maps span approx 5 degrees of latitude
+        latitude_span = randint(0,10) + 1
+        min_latitude = randint(-60, 61 - latitude_span)
+        self.latitudes = (min_latitude, min_latitude + latitude_span)
         self.calculate_tradewinds()
         
-        # generate base heat
-        # run simple dynamic weather
+        # TODO: generate base heat
+        # TODO: run simple dynamic weather
         #     note: stream length and basin size can be checked against Hack's Law
-        # build biomes
-        # select initial settlement locations
-        # more...
+        # TODO: build biomes
+        # TODO: select initial settlement locations
+        # more... second-gen settlements?
     
     @timed
     def generate_tiles(self, smoothing_strength = 2):
@@ -247,47 +250,73 @@ class Map():
                 normal_vector = edge.tiles[1-index].center - tile.center
                 normal_vector /= magnitude(normal_vector) # sets magnitude to 1
                 normal_force = dot(tile.plate.velocity, normal_vector)
-                edge.elevation +=  sign(normal_force) * sqrt(abs(normal_force)) # TODO: sqrt?
+                edge.elevation +=  (sign(normal_force) * sqrt(abs(normal_force)) + # TODO: sqrt?
+                                    tile.plate.elevation) # TODO: adding plate elevation here?
     
     @timed
     def calculate_elevation(self):
-        
-        calculated_vertices = [vertex for boundary in self.boundaries 
+        boundary_vertices = [vertex for boundary in self.boundaries 
                              for vertex in boundary.vertices]
+        boundary_vertices = list(set(boundary_vertices))
                              
-        for vertex in calculated_vertices:
+        for vertex in boundary_vertices:
             vertex.elevation = mean([edge.elevation for edge in vertex.edges 
                                      if edge in self.boundaries])
                              
-        current_vertices = calculated_vertices
+        current_vertices = boundary_vertices
+        completed_vertices = len(boundary_vertices)
+        total_vertices = len(self.vertices)
         
-        while len(calculated_vertices) < len(self.vertices):
+#        log_map_size = 1 / log2(len(self.points))
+        log_map_size = 8 / sqrt(len(self.points)) # TODO: calibrate
+        
+        while completed_vertices < total_vertices:
+            
             new_vertices = [new_vertex for current_vertex in current_vertices
                             for new_edge in current_vertex.edges
                             for new_vertex in new_edge.vertices
-                            if new_vertex not in calculated_vertices]
+                            if new_vertex.elevation == -100]
+            new_vertices = list(set(new_vertices))
+            
+            old_vertices = []
+            to_remove = []
             for new_vertex in new_vertices:
-                new_vertex.elevation = ((.8 + random() * .2) ** (1 / log2(len(self.points))) * 
-                                        mean([vertex.elevation # TODO: coefficient
-                                              for edge in new_vertex.edges
-                                              for vertex in edge.vertices
-                                              if vertex in calculated_vertices]))
-            calculated_vertices.extend(new_vertices)
+                if random() < .5: # TODO: calibrate this
+                    plate_elevation = new_vertex.edges[0].tiles[0].plate.elevation
+                    new_vertex.elevation = (((.8 + random() * .2) ** log_map_size) * 
+                                            ((mean([vertex.elevation # TODO: coefficient
+                                                  for edge in new_vertex.edges
+                                                  for vertex in edge.vertices
+                                                  if vertex.elevation != -100])) - 
+                                                   plate_elevation)) + plate_elevation
+                else:
+                    old_vertex = choice([old_vertex for old_edge in new_vertex.edges
+                                         for old_vertex in old_edge.vertices
+                                         if old_vertex.elevation != -100])
+                    old_vertices.append(old_vertex)
+                    to_remove.append(new_vertex)
+            
+            for vertex in to_remove:
+                new_vertices.remove(vertex)
+
+            completed_vertices += len(new_vertices)
             current_vertices = new_vertices
+            current_vertices.extend(old_vertices)
 
         for tile in self.tiles:
-            vertex_elevations = [vertex.elevation for vertex in tile.vertices]
-            tile.elevation = mean(vertex_elevations) + tile.plate.elevation # TODO: refine
+            vertex_elevations = [vertex.elevation - self.ocean_elevation for vertex in tile.vertices]
+            tile.elevation = mean(vertex_elevations) - self.ocean_elevation # TODO: refine
             tile.slope = max(vertex_elevations) - min(vertex_elevations)
             # TODO: tile.roughness based on coplanarity
     
     def fill_oceans(self):
         for tile in self.tiles:
-            tile.water_depth = max(0, self.ocean_elevation - tile.elevation)
+            tile.water_depth = max(0, -tile.elevation)
             # TODO: only fill oceans if connected to a map edge?
     
     def calculate_tradewinds(self):
-        pass
+#        if abs(self.latitude) <= 5:
+         pass  
     
     @timed        
     def display(self, 
@@ -332,7 +361,7 @@ class Map():
         axes = figure.gca()
         
         if show_boundary_elevation or show_tile_elevation or show_vertex_elevation:
-            color_norm = mpl_colors.Normalize(vmin = -2, vmax = 2)
+            color_norm = mpl_colors.Normalize(vmin = -2, vmax = 2 - self.ocean_elevation)
             color_map = pyplot.get_cmap('gist_earth')
             palette = colormap.ScalarMappable(norm = color_norm, cmap = color_map)
             
@@ -382,7 +411,7 @@ class Map():
         if show_tile_elevation or show_tile_elevation_labels:
             for tile in self.tiles:
                 if show_tile_elevation:
-                    if show_water and tile.elevation <= self.ocean_elevation:
+                    if show_water and tile.elevation <= 0:
                         pyplot.fill(*zip(*tile.vertex_coords), 
                                     color = palette.to_rgba(tile.elevation / 10 - .8))
                         # TODO: fix this to use water_depth
