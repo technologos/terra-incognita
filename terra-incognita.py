@@ -10,7 +10,7 @@ Thanks particularly to mewo2 for the framework for the regularization.
 """
 
 import numpy
-from numpy import sqrt, square, dot, sign
+from numpy import sqrt, dot, sign, mean, log2, pi, cos, sin
 from numpy.random import random, randint
 from numpy.linalg import norm as magnitude
 from matplotlib import pyplot
@@ -18,8 +18,9 @@ from matplotlib.collections import LineCollection
 from matplotlib import colors as mpl_colors
 from matplotlib import cm as colormap
 from scipy.spatial import Voronoi
-from random import uniform
 from math import degrees, acos
+from functools import wraps
+from time import time
 
 
 '''
@@ -38,7 +39,18 @@ def centroid(vertices):
 
 def angle(vector1, vector2):
     return degrees(acos(dot(vector1, vector2) / 
-                                  (magnitude(vector1) * magnitude(vector2))))
+                        (magnitude(vector1) * magnitude(vector2))))
+
+def timed(function):
+    
+    @wraps(function)
+    def timed_function(*args, **kwargs):
+        start_time = time()
+        function(*args, **kwargs)
+        end_time = time()
+        print(round(end_time - start_time, 2), ' seconds')
+    
+    return timed_function
   
 '''
 map classes
@@ -54,8 +66,11 @@ class MapTile():
         self.biome = []
         self.plate = -1 # index of plate on which this tile sits
         self.properties = []
-        self.height = 0 # calculated from edges
+        self.elevation = 0 # calculated from edges
         self.boundary = False # is this tile on the outisde of a plate?
+        self.slope = 0
+        self.roughness = 0
+        self.water_depth = 0
 
 class MapEdge():
     def __init__(self, tiles):
@@ -63,7 +78,7 @@ class MapEdge():
         self.vertices = [] # indices of two endpoints
         self.type = []
         self.properties = []
-        self.height = 0 # derived from adjacent MapTiles' velocity vectors
+        self.elevation = 0 # derived from adjacent MapTiles' velocity vectors
         self.length = 0
         self.boundary = False
 
@@ -71,6 +86,7 @@ class MapVertex():
     def __init__(self, coords):
         self.coords = coords
         self.edges = [] # indices of connected MapEdges
+        self.elevation = 0
         
 class TectonicPlate():
     def __init__(self, initial_tile):
@@ -80,7 +96,7 @@ class TectonicPlate():
         self.velocity = numpy.array([0, 0]) # do plates also rotate?
         self.color = tuple(random(3))
         self.boundaries = [] # MapTiles 
-        # do plates also need heights?
+        self.elevation = random() - .5 # TODO: refine
         
 
 class Map():    
@@ -92,42 +108,54 @@ class Map():
         self.points = random((number_of_tiles, 2))
         
         self.tiles = [] # MapTiles
+        print('Generating tiles...')
         self.generate_tiles(smoothing_strength) # center, vertices, vertex_coords
         
         self.edges = [] # MapEdges
+        print('Generating adjacencies...')
         self.generate_adjacencies() # neighbors
         
         self.vertices = [] # MapVertexes
+        print('Generating vertices...')
         self.generate_vertices()
         
         # create tectonic plates
         self.plates = [] # TectonicPlates
         self.boundaries = [] # MapEdges
+        print('Generating plates...')
         self.generate_plates()
         
         # move plates
+        print('Moving plates...')
         self.move_plates()
+        #     note: island-forming volcanoes?
+        
+        # update elevations
+        print('Calculating elevation...')
+        self.calculate_elevation()
+        self.ocean_elevation = random() - .5 # TODO: refine
+        self.fill_oceans()
         
         # generate tradewinds
+        self.latitude = randint(-60, 61) # maps span approx 5 degrees of latitude
+        self.calculate_tradewinds()
+        
         # generate base heat
         # run simple dynamic weather
+        #     note: stream length and basin size can be checked against Hack's Law
         # build biomes
         # select initial settlement locations
         # more...
-        
+    
+    @timed
     def generate_tiles(self, smoothing_strength = 2):
         self.regularize_tiles(smoothing_strength)
         #self.points = numpy.append(self.points, [[0,0], [0,1], [1,0], [1,1]], axis = 0)
         self.voronoi = Voronoi(self.points)
         for index, point in enumerate(self.voronoi.points):
             new_tile = MapTile(point)
-            new_tile.vertices = [i 
-                                 for i in self.voronoi.regions[self.voronoi.point_region[index]] 
-                                 if i != -1]
-            new_tile.vertex_coords = numpy.asarray([self.voronoi.vertices[i] 
-                                                    for i in new_tile.vertices])
             self.tiles.append(new_tile)
-        
+    
     def regularize_tiles(self, number_of_iterations):
         for _ in range(number_of_iterations):
             vor = Voronoi(self.points)
@@ -144,7 +172,8 @@ class Map():
                     new_point = centroid(region_vertices)
                     new_points.append(new_point)
             self.points = numpy.asarray(new_points)
-            
+    
+    @timed
     def generate_adjacencies(self):
         for ridge in self.voronoi.ridge_points:
             tiles = [self.tiles[i] for i in ridge]
@@ -155,6 +184,7 @@ class Map():
                 tiles[index].neighbors.append(tiles[1 - index])
                 tiles[index].edges.append(new_edge)
     
+    @timed
     def generate_vertices(self):
         for vertex in self.voronoi.vertices:
             new_vertex = MapVertex(vertex)
@@ -164,7 +194,14 @@ class Map():
                 if vertex_index != -1:
                     self.edges[index].vertices.append(self.vertices[vertex_index])
                     self.vertices[vertex_index].edges.append(self.edges[index])
-    
+        for index, tile in enumerate(self.tiles):
+            vertex_indices = [i for i in self.voronoi.regions[self.voronoi.point_region[index]]
+                              if i != -1]
+            tile.vertices = [self.vertices[j] for j in vertex_indices]
+            tile.vertex_coords = numpy.asarray([self.voronoi.vertices[k] 
+                                                for k in vertex_indices])
+                             
+    @timed
     def generate_plates(self):
         tiles_assigned = 0
         while tiles_assigned < len(self.tiles):
@@ -173,10 +210,10 @@ class Map():
             if focus_tile.plate == -1:
                 new_plate = TectonicPlate(focus_tile)
                 
-                velocity_vector = numpy.array([uniform(-1, 1), uniform(-1, 1)])
-                norm_factor = sqrt(numpy.sum(square(velocity_vector))) # makes magnitude 1
+                direction = random() * 2 * pi
+                velocity_vector = numpy.array([cos(direction), sin(direction)])
                 magnitude = random()
-                new_plate.velocity = magnitude * velocity_vector / norm_factor 
+                new_plate.velocity = magnitude * velocity_vector 
                 
                 focus_tile.plate = new_plate
                 tiles_assigned += 1
@@ -186,7 +223,7 @@ class Map():
                 tiles_to_add = []
                 for tile in focus_plate.tiles:
                     for index, neighbor in enumerate(tile.neighbors):
-                        if neighbor.plate == -1:
+                        if neighbor.plate == -1: # TODO: consider prob < 1
                             neighbor.plate = tile.plate
                             tiles_assigned += 1
                             tiles_to_add.append(neighbor)
@@ -203,16 +240,56 @@ class Map():
                     self.boundaries.append(edge)
                     for tile in edge.tiles:
                         tile.boundary = True
-        
+    @timed    
     def move_plates(self):
         for edge in self.boundaries:
             for index, tile in enumerate(edge.tiles):
                 normal_vector = edge.tiles[1-index].center - tile.center
-                normal_vector /= magnitude(normal_vector)
+                normal_vector /= magnitude(normal_vector) # sets magnitude to 1
                 normal_force = dot(tile.plate.velocity, normal_vector)
-                edge.height +=  sign(normal_force) * sqrt(abs(normal_force))
-                
+                edge.elevation +=  sign(normal_force) * sqrt(abs(normal_force)) # TODO: sqrt?
     
+    @timed
+    def calculate_elevation(self):
+        
+        calculated_vertices = [vertex for boundary in self.boundaries 
+                             for vertex in boundary.vertices]
+                             
+        for vertex in calculated_vertices:
+            vertex.elevation = mean([edge.elevation for edge in vertex.edges 
+                                     if edge in self.boundaries])
+                             
+        current_vertices = calculated_vertices
+        
+        while len(calculated_vertices) < len(self.vertices):
+            new_vertices = [new_vertex for current_vertex in current_vertices
+                            for new_edge in current_vertex.edges
+                            for new_vertex in new_edge.vertices
+                            if new_vertex not in calculated_vertices]
+            for new_vertex in new_vertices:
+                new_vertex.elevation = ((.8 + random() * .2) ** (1 / log2(len(self.points))) * 
+                                        mean([vertex.elevation # TODO: coefficient
+                                              for edge in new_vertex.edges
+                                              for vertex in edge.vertices
+                                              if vertex in calculated_vertices]))
+            calculated_vertices.extend(new_vertices)
+            current_vertices = new_vertices
+
+        for tile in self.tiles:
+            vertex_elevations = [vertex.elevation for vertex in tile.vertices]
+            tile.elevation = mean(vertex_elevations) + tile.plate.elevation # TODO: refine
+            tile.slope = max(vertex_elevations) - min(vertex_elevations)
+            # TODO: tile.roughness based on coplanarity
+    
+    def fill_oceans(self):
+        for tile in self.tiles:
+            tile.water_depth = max(0, self.ocean_elevation - tile.elevation)
+            # TODO: only fill oceans if connected to a map edge?
+    
+    def calculate_tradewinds(self):
+        pass
+    
+    @timed        
     def display(self, 
                 show_grid = True,
                 highlight_tile = [-1], 
@@ -222,9 +299,14 @@ class Map():
                 show_plate_centers = False,
                 show_plate_velocities = False,
                 show_plate_boundaries = False,
-                show_boundary_heights= False,
+                show_boundary_elevation = False,
+                show_tile_elevation = False,
+                show_vertex_elevation = False,
+                show_tile_elevation_labels = False,
+                show_water = False,
                 clean = False,
                 plate_test = False,
+                elevation_test = False,
                 xlim = [0.05, .95], 
                 ylim = [0.05, .95]):
         
@@ -239,10 +321,21 @@ class Map():
             show_plate_centers = True
             show_plate_velocities = True
             show_plate_boundaries = True
-            show_boundary_heights = True        
+            show_boundary_elevation = True   
+            
+        if elevation_test:
+            show_plate_boundaries = True
+            show_boundary_elevation = True
+            show_tile_elevation = True
 
         figure = pyplot.figure()
         axes = figure.gca()
+        
+        if show_boundary_elevation or show_tile_elevation or show_vertex_elevation:
+            color_norm = mpl_colors.Normalize(vmin = -2, vmax = 2)
+            color_map = pyplot.get_cmap('gist_earth')
+            palette = colormap.ScalarMappable(norm = color_norm, cmap = color_map)
+            
         
         if show_grid:
             line_segments = []
@@ -271,16 +364,12 @@ class Map():
         if show_plate_boundaries:
             line_segments = []
             colors = []
-            if show_boundary_heights:
-                color_norm = mpl_colors.Normalize(vmin = -2, vmax = 2)
-                color_map = pyplot.get_cmap('gist_earth')
-                palette = colormap.ScalarMappable(norm = color_norm, cmap = color_map)
             for edge in self.boundaries:
                 if len(edge.vertices) == 2:
                     line_segments.append([(x, y) for x, y in [vertex.coords 
                                           for vertex in edge.vertices]])
-                    if show_boundary_heights:
-                        colors.append(palette.to_rgba(edge.height))
+                    if show_boundary_elevation:
+                        colors.append(palette.to_rgba(edge.elevation))
                     else:
                         colors.append('k')
             borders = LineCollection(line_segments,
@@ -289,6 +378,26 @@ class Map():
                                      linestyle='solid')
             borders.set_alpha(1.0)
             axes.add_collection(borders)
+        
+        if show_tile_elevation or show_tile_elevation_labels:
+            for tile in self.tiles:
+                if show_tile_elevation:
+                    if show_water and tile.elevation <= self.ocean_elevation:
+                        pyplot.fill(*zip(*tile.vertex_coords), 
+                                    color = palette.to_rgba(tile.elevation / 10 - .8))
+                        # TODO: fix this to use water_depth
+                    else:
+                        pyplot.fill(*zip(*tile.vertex_coords), 
+                                    color = palette.to_rgba(tile.elevation))
+                if show_tile_elevation_labels:
+                    pyplot.text(tile.center[0], tile.center[1], round(tile.elevation, 2))
+        
+        if show_vertex_elevation:
+            for vertex in self.vertices:
+                pyplot.plot(vertex.coords[0], vertex.coords[1], 
+                            color = palette.to_rgba(vertex.elevation),
+                            marker = 'o')
+                
         
         highlight_tile = numpy.asarray(highlight_tile)
             
