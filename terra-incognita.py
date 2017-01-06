@@ -10,7 +10,7 @@ Thanks particularly to mewo2 for the framework for the regularization.
 """
 
 import numpy
-from numpy import sqrt, dot, sign, mean, pi, cos, sin
+from numpy import sqrt, dot, sign, mean, pi, cos, sin, array, asarray, concatenate
 from numpy.random import random, randint, normal
 from numpy.linalg import norm as magnitude
 from matplotlib import pyplot, is_interactive
@@ -23,6 +23,7 @@ from functools import wraps
 from time import time
 from random import choice
 from os import listdir, chdir, mkdir
+from sys import platform
 
 if is_interactive():
     pyplot.ioff()
@@ -33,8 +34,8 @@ helper functions
 def centroid(vertices):
     x = vertices[:, 0]
     y = vertices[:, 1]
-    x1 = numpy.concatenate((x[1:], x[:1]))
-    y1 = numpy.concatenate((y[1:], y[:1]))
+    x1 = concatenate((x[1:], x[:1]))
+    y1 = concatenate((y[1:], y[:1]))
     C = (x * y1) - (y * x1)
     A = sum(C / 2)
     C_x = ((x + x1) * C) / (6 * A)
@@ -55,12 +56,24 @@ def timed(function):
         print(round(end_time - start_time, 2), 'seconds')
     
     return timed_function
+
+def bulk_generate(number, folder = '', size = 4096):
     
-def bulk_generate(number, folder = '/Users/CMilroy/Pictures/Maps/', size = 4096):
+    if folder == '':
+        if platform == 'darwin':
+            folder = '/Users/CMilroy/Pictures/Maps/'
+        elif platform == 'win32':
+            folder = 'E:/Documents/Sandbox/WorldBuilder/Maps/'
+        else:
+            raise Exception('Platform not recognized')
     
     chdir(folder)
-    max_existing_index = max([int(name) for name in listdir() if name[0] != '.'])
-    new_folder = str(max_existing_index + 1)
+    folders = [int(name) for name in listdir() if name[0] != '.']
+    if len(folders) == 0:
+        new_folder = '1'
+    else:
+        max_existing_index = max(folders)
+        new_folder = str(max_existing_index + 1)
     mkdir(new_folder)
     chdir(new_folder)
     
@@ -72,6 +85,7 @@ def bulk_generate(number, folder = '/Users/CMilroy/Pictures/Maps/', size = 4096)
                             show_water = True, window = False)
             timestamp = int(time())
             pyplot.savefig(str(timestamp) + '.png')
+            pyplot.close('all')
         except:
             continue
   
@@ -118,7 +132,7 @@ class TectonicPlate():
         self.plate_type = []
         self.tiles = [initial_tile]
         self.center = initial_tile.center
-        self.velocity = numpy.array([0, 0]) # do plates also rotate?
+        self.velocity = array([0, 0]) # do plates also rotate?
         self.color = tuple(random(3))
         self.boundaries = [] # MapTiles 
         self.elevation = normal(scale = .25) # TODO: refine
@@ -159,12 +173,16 @@ class Map():
         # update elevations
         print('Calculating elevation...')
         self.calculate_elevation()
+        
+        print('Filling oceans...')
+        self.ocean = []
         self.fill_oceans()
         
         # generate tradewinds
         latitude_span = randint(0,10) + 1
         min_latitude = randint(-60, 61 - latitude_span)
         self.latitudes = (min_latitude, min_latitude + latitude_span)
+        self.wind_tiles = []
         self.calculate_tradewinds()
         
         # TODO: generate base heat
@@ -193,12 +211,12 @@ class Map():
                 if -1 in region:
                     new_points.append(point)
                 else:
-                    region_vertices = numpy.asarray([vor.vertices[i,:] for i in region])
+                    region_vertices = asarray([vor.vertices[i,:] for i in region])
                     region_vertices[region_vertices < 0] = 0
                     region_vertices[region_vertices > 1] = 1
                     new_point = centroid(region_vertices)
                     new_points.append(new_point)
-            self.points = numpy.asarray(new_points)
+            self.points = asarray(new_points)
     
     @timed
     def generate_adjacencies(self):
@@ -225,7 +243,7 @@ class Map():
             vertex_indices = [i for i in self.voronoi.regions[self.voronoi.point_region[index]]
                               if i != -1]
             tile.vertices = [self.vertices[j] for j in vertex_indices]
-            tile.vertex_coords = numpy.asarray([self.voronoi.vertices[k] 
+            tile.vertex_coords = asarray([self.voronoi.vertices[k] 
                                                 for k in vertex_indices])
                              
     @timed
@@ -238,7 +256,7 @@ class Map():
                 new_plate = TectonicPlate(focus_tile)
                 
                 direction = random() * 2 * pi
-                velocity_vector = numpy.array([cos(direction), sin(direction)])
+                velocity_vector = array([cos(direction), sin(direction)])
                 magnitude = random()
                 new_plate.velocity = magnitude * velocity_vector 
                 
@@ -329,14 +347,34 @@ class Map():
 
         for tile in self.tiles:
             vertex_elevations = [vertex.elevation - self.ocean_elevation for vertex in tile.vertices]
-            tile.elevation = mean(vertex_elevations) - self.ocean_elevation # TODO: refine
+            tile.elevation = mean(vertex_elevations) # TODO: refine
             tile.slope = max(vertex_elevations) - min(vertex_elevations)
             # TODO: tile.roughness based on coplanarity
     
+    @timed
     def fill_oceans(self):
         for tile in self.tiles:
-            tile.water_depth = max(0, -tile.elevation)
-            # TODO: only fill oceans if connected to a map edge?
+            if (max(tile.center) > .95 or min(tile.center) < .05) and tile.elevation < 0:
+                tile.ocean = True
+                self.ocean.append(tile)
+                
+        new_ocean = [neighbor for tile in self.ocean 
+                     for neighbor in tile.neighbors 
+                     if neighbor.elevation < 0 and not neighbor.ocean]
+                     
+        while len(new_ocean) > 0:
+            future_ocean = [neighbor for tile in new_ocean
+                            for neighbor in tile.neighbors
+                            if neighbor.elevation < 0 and not neighbor.ocean]
+            future_ocean = list(set(future_ocean))
+            if len(future_ocean) > 0:
+                self.ocean.extend(future_ocean)
+                for tile in future_ocean:
+                    tile.ocean = True
+            new_ocean = future_ocean
+                    
+        for tile in self.ocean:
+            tile.water_depth = -tile.elevation
     
     def calculate_tradewinds(self):
 #        if abs(self.latitude) <= 5:
@@ -386,7 +424,7 @@ class Map():
         axes = figure.gca()
         
         if show_boundary_elevation or show_tile_elevation or show_vertex_elevation:
-            color_norm = mpl_colors.Normalize(vmin = -2, vmax = 2 - self.ocean_elevation)
+            color_norm = mpl_colors.Normalize(vmin = -2, vmax = 2)
             color_map = pyplot.get_cmap('gist_earth')
             palette = colormap.ScalarMappable(norm = color_norm, cmap = color_map)
             
@@ -436,13 +474,17 @@ class Map():
         if show_tile_elevation or show_tile_elevation_labels:
             for tile in self.tiles:
                 if show_tile_elevation:
-                    if show_water and tile.elevation <= 0:
+                    water_divider = -.55
+                    water_max = water_divider - .05
+                    land_min = water_divider + .05
+                    if show_water and tile.water_depth > 0:
                         pyplot.fill(*zip(*tile.vertex_coords), 
-                                    color = palette.to_rgba(tile.elevation / 10 - .8))
-                        # TODO: fix this to use water_depth
+                                    color = palette.to_rgba(water_max - 
+                                                            tile.water_depth / 4))
                     else:
                         pyplot.fill(*zip(*tile.vertex_coords), 
-                                    color = palette.to_rgba(tile.elevation))
+                                    color = palette.to_rgba(tile.elevation * 
+                                                            (2 - land_min) / 4 - land_min))
                 if show_tile_elevation_labels:
                     pyplot.text(tile.center[0], tile.center[1], round(tile.elevation, 2))
         
@@ -453,7 +495,7 @@ class Map():
                             marker = 'o')
                 
         
-        highlight_tile = numpy.asarray(highlight_tile)
+        highlight_tile = asarray(highlight_tile)
             
         if numpy.all(highlight_tile >= 0) and numpy.all(highlight_tile < len(self.tiles)):
             for tile in highlight_tile:
